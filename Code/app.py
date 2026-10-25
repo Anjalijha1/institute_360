@@ -2,8 +2,9 @@ import os
 import threading
 from datetime import datetime, date, timedelta
 
+import pandas as pd
 from apscheduler.schedulers.background import BackgroundScheduler
-from flask import Flask, render_template, request, redirect, url_for, flash
+from flask import Flask, Response, abort, render_template, request, redirect, url_for, flash
 from flask_login import LoginManager, login_user, logout_user, current_user
 from sqlalchemy import event, or_, func, select
 from sqlalchemy.exc import IntegrityError
@@ -883,6 +884,358 @@ def run_checks():
             "success",
         )
     return redirect(url_for("alerts"))
+
+
+# ---------------------------------------------------------------------------
+# REPORTS PAGE (CSV downloads made with pandas)
+# ---------------------------------------------------------------------------
+# pandas works with "DataFrames": tables held in the computer's memory.
+# Each report below builds one DataFrame, and the download route turns it
+# into a CSV file.
+
+# The columns of the main table that most reports start from.
+CASE_COLUMNS = [
+    "Case ID", "Institution ID", "Institution", "City", "State", "Region",
+    "Category", "Status", "Status group", "Bureau / Cell", "Officer",
+    "Received on", "Expected disposal", "Last action", "Last action on (UTC)",
+    "Escalated", "Overlap flag", "Days open", "Days overdue",
+    "Days to dispose (approx)",
+]
+
+
+def status_group(status):
+    # Turns a status like "Under Review" into its group: "Under Process".
+    for group, names in STATUS_GROUPS.items():
+        if status in names:
+            return group
+    return "Other"
+
+
+def load_cases_table():
+    # Builds ONE table with one row per case, including the names (not just
+    # id numbers) and a few worked-out numbers. Most reports start from this.
+    today = date.today()
+    rows = []
+
+    for case in Case.query.order_by(Case.id).all():
+        inst = case.institution
+        group = status_group(case.status)
+        is_open = group != "Disposed"
+        received = case.received_on
+
+        # Days the case has been open (open cases only).
+        days_open = (today - received).days if (is_open and received) else None
+
+        # Days past the due date (open cases only; 0 means not overdue).
+        days_overdue = None
+        if is_open and case.expected_disposal_on:
+            days_overdue = max(0, (today - case.expected_disposal_on).days)
+
+        # Days it took to dispose. We don't store the disposal date, so we use
+        # the date of the last action. This is an approximation.
+        days_to_dispose = None
+        if group == "Disposed" and received and case.last_action_on:
+            days_to_dispose = max(0, (case.last_action_on.date() - received).days)
+
+        rows.append({
+            "Case ID": case.id,
+            "Institution ID": inst.id,
+            "Institution": inst.name,
+            "City": inst.city or "",
+            "State": inst.state or "",
+            "Region": inst.region or "No region",
+            "Category": case.category or "No category",
+            "Status": case.status or "No status",
+            "Status group": group,
+            "Bureau / Cell": case.current_bureau.name if case.current_bureau else "No Bureau / Cell",
+            "Officer": case.officer.name if case.officer else "Unassigned",
+            "Received on": received.isoformat() if received else "",
+            "Expected disposal": case.expected_disposal_on.isoformat() if case.expected_disposal_on else "",
+            "Last action": case.last_action_summary or "",
+            "Last action on (UTC)": case.last_action_on.strftime("%Y-%m-%d %H:%M") if case.last_action_on else "",
+            "Escalated": "Yes" if case.is_escalated else "No",
+            "Overlap flag": "Yes" if case.overlap_flag else "No",
+            "Days open": days_open,
+            "Days overdue": days_overdue,
+            "Days to dispose (approx)": days_to_dispose,
+        })
+
+    df = pd.DataFrame(rows, columns=CASE_COLUMNS)
+    # Make sure the three "days" columns are real numbers (blank when unknown).
+    for column in ("Days open", "Days overdue", "Days to dispose (approx)"):
+        df[column] = pd.to_numeric(df[column])
+    return df
+
+
+def summary_by(df, column):
+    # One row per value of "column" (for example one row per Region),
+    # with counts of cases in each situation.
+    work = df.assign(
+        _pending=(df["Status group"] == "Pending").astype(int),
+        _under=(df["Status group"] == "Under Process").astype(int),
+        _disposed=(df["Status group"] == "Disposed").astype(int),
+        _other=(df["Status group"] == "Other").astype(int),
+        _escalated=(df["Escalated"] == "Yes").astype(int),
+        _overlap=(df["Overlap flag"] == "Yes").astype(int),
+        _overdue=(df["Days overdue"].fillna(0) > 0).astype(int),
+    )
+    result = work.groupby(column, as_index=False).agg(**{
+        "Total cases": ("Case ID", "count"),
+        "Pending": ("_pending", "sum"),
+        "Under Process": ("_under", "sum"),
+        "Disposed": ("_disposed", "sum"),
+        "Other status": ("_other", "sum"),
+        "Escalated": ("_escalated", "sum"),
+        "Overlap flagged": ("_overlap", "sum"),
+        "Overdue (open)": ("_overdue", "sum"),
+    })
+    result["Disposal rate %"] = (result["Disposed"] / result["Total cases"] * 100).round(1)
+    return result.sort_values("Total cases", ascending=False)
+
+
+def report_institution_history():
+    # One row per history action, sorted by institution, then case, then time.
+    # Cases with no actions still get one row (the action boxes are empty).
+    cases_df = load_cases_table()
+    bureau_names = {b.id: b.name for b in Bureau.query.all()}
+    user_names = {u.id: u.name for u in User.query.all()}
+
+    action_rows = []
+    actions = CaseAction.query.order_by(
+        CaseAction.case_id, CaseAction.performed_at, CaseAction.id
+    ).all()
+    for a in actions:
+        action_rows.append({
+            "Case ID": a.case_id,
+            "Action on (UTC)": a.performed_at.strftime("%Y-%m-%d %H:%M") if a.performed_at else "",
+            "Action type": a.action_type or "",
+            "Performed by": user_names.get(a.performed_by, ""),
+            "From Bureau / Cell": bureau_names.get(a.from_bureau_id, ""),
+            "To Bureau / Cell": bureau_names.get(a.to_bureau_id, ""),
+            "Remarks": a.remarks or "",
+        })
+    actions_df = pd.DataFrame(action_rows, columns=[
+        "Case ID", "Action on (UTC)", "Action type", "Performed by",
+        "From Bureau / Cell", "To Bureau / Cell", "Remarks",
+    ])
+
+    case_part = cases_df[[
+        "Institution ID", "Institution", "Region", "Case ID", "Category",
+        "Status", "Bureau / Cell",
+    ]].rename(columns={"Status": "Case status", "Bureau / Cell": "Case Bureau / Cell"})
+
+    # "left" merge: keep every case, and attach its actions when it has any.
+    history = case_part.merge(actions_df, on="Case ID", how="left")
+    return history.sort_values(
+        ["Institution", "Case ID", "Action on (UTC)"], kind="stable"
+    )
+
+
+def report_region():
+    return summary_by(load_cases_table(), "Region")
+
+
+def report_bureau():
+    return summary_by(load_cases_table(), "Bureau / Cell")
+
+
+def report_status():
+    df = load_cases_table()
+    result = df.groupby(["Status", "Status group"], as_index=False).agg(
+        **{"Cases": ("Case ID", "count")}
+    )
+    total = len(df)
+    result["Percent of all cases"] = (result["Cases"] / total * 100).round(1) if total else 0
+    return result.sort_values("Cases", ascending=False)
+
+
+def ageing_bucket(days):
+    # Puts a number of days into a group, like "16-30 days".
+    if pd.isna(days):
+        return ""
+    days = int(days)
+    if days <= 7:
+        return "0-7 days"
+    if days <= 15:
+        return "8-15 days"
+    if days <= 30:
+        return "16-30 days"
+    if days <= 60:
+        return "31-60 days"
+    return "Over 60 days"
+
+
+def report_ageing():
+    # Every case that is not disposed, oldest first.
+    df = load_cases_table()
+    open_cases = df[df["Status group"] != "Disposed"].copy()
+    open_cases["Ageing bucket"] = open_cases["Days open"].map(ageing_bucket)
+    open_cases = open_cases.sort_values("Days open", ascending=False, na_position="last")
+
+    result = open_cases[[
+        "Case ID", "Institution ID", "Institution", "Region", "Category",
+        "Status", "Bureau / Cell", "Officer", "Received on",
+        "Expected disposal", "Days open", "Ageing bucket", "Days overdue",
+    ]].copy()
+    # Show whole numbers (3, not 3.0), with blanks where the date is unknown.
+    for column in ("Days open", "Days overdue"):
+        result[column] = result[column].astype("Int64")
+    return result
+
+
+def report_disposal_rate():
+    df = load_cases_table()
+    work = df.assign(
+        _disposed=(df["Status group"] == "Disposed").astype(int),
+        _open=(df["Status group"] != "Disposed").astype(int),
+    )
+    result = work.groupby("Bureau / Cell", as_index=False).agg(**{
+        "Total cases": ("Case ID", "count"),
+        "Disposed": ("_disposed", "sum"),
+        "Still open": ("_open", "sum"),
+        "Avg days to dispose (approx)": ("Days to dispose (approx)", "mean"),
+    })
+    result["Disposal rate %"] = (result["Disposed"] / result["Total cases"] * 100).round(1)
+    result["Avg days to dispose (approx)"] = result["Avg days to dispose (approx)"].round(1)
+    result = result[[
+        "Bureau / Cell", "Total cases", "Disposed", "Still open",
+        "Disposal rate %", "Avg days to dispose (approx)",
+    ]]
+    return result.sort_values("Disposal rate %", ascending=False)
+
+
+def report_overlaps():
+    # One row per link between two cases, with both cases side by side.
+    cases_df = load_cases_table()
+    records = cases_df.set_index("Case ID").to_dict("index")
+
+    rows = []
+    links = CaseLink.query.order_by(CaseLink.match_score.desc(), CaseLink.id).all()
+    for link in links:
+        a = records.get(link.case_a_id, {})
+        b = records.get(link.case_b_id, {})
+
+        same_bureau = ""
+        if a and b:
+            same_bureau = "Yes" if a["Bureau / Cell"] == b["Bureau / Cell"] else "No"
+
+        rows.append({
+            "Link ID": link.id,
+            "Review state": link.review_state or "",
+            "Link type": link.link_type or "",
+            "Match score": link.match_score,
+            "Reason": link.reason or "",
+            "Detected on (UTC)": link.created_at.strftime("%Y-%m-%d %H:%M") if link.created_at else "",
+            "Same Bureau / Cell?": same_bureau,
+            "Case A": link.case_a_id,
+            "Case A institution": a.get("Institution", ""),
+            "Case A Bureau / Cell": a.get("Bureau / Cell", ""),
+            "Case A officer": a.get("Officer", ""),
+            "Case A status": a.get("Status", ""),
+            "Case B": link.case_b_id,
+            "Case B institution": b.get("Institution", ""),
+            "Case B Bureau / Cell": b.get("Bureau / Cell", ""),
+            "Case B officer": b.get("Officer", ""),
+            "Case B status": b.get("Status", ""),
+        })
+
+    return pd.DataFrame(rows, columns=[
+        "Link ID", "Review state", "Link type", "Match score", "Reason",
+        "Detected on (UTC)", "Same Bureau / Cell?",
+        "Case A", "Case A institution", "Case A Bureau / Cell", "Case A officer", "Case A status",
+        "Case B", "Case B institution", "Case B Bureau / Cell", "Case B officer", "Case B status",
+    ])
+
+
+# slug (used in the web address) -> (title, description, function that builds it)
+REPORTS = {
+    "institution-case-history": (
+        "Institution-wise case history",
+        "Every institution's cases with their full action history, one row per action.",
+        report_institution_history,
+    ),
+    "region-wise": (
+        "Region-wise report",
+        "Cases per region: totals by status group, escalated, overlaps, overdue and disposal rate.",
+        report_region,
+    ),
+    "bureau-wise": (
+        "Bureau / Cell-wise report",
+        "Cases per Bureau / Cell: totals by status group, escalated, overlaps, overdue and disposal rate.",
+        report_bureau,
+    ),
+    "status-wise": (
+        "Status-wise report",
+        "How many cases have each status, and their share of all cases.",
+        report_status,
+    ),
+    "pending-ageing": (
+        "Pending-case ageing",
+        "Every case not yet disposed, oldest first, with days open and days overdue.",
+        report_ageing,
+    ),
+    "disposal-rate": (
+        "Disposal rate per Bureau / Cell",
+        "Cases disposed, still open, disposal rate and average days taken (approximate).",
+        report_disposal_rate,
+    ),
+    "overlapping-cases": (
+        "Overlapping cases",
+        "Every link between two cases, side by side, with their Bureaus, officers and status.",
+        report_overlaps,
+    ),
+}
+
+
+def csv_safe(value):
+    # Excel treats text that starts with = + - or @ as a formula, which can be
+    # abused (for example by a remark someone typed on purpose). Putting a '
+    # in front makes Excel show it as plain text instead.
+    if isinstance(value, str) and value and value[0] in "=+-@\t\r":
+        return "'" + value
+    return value
+
+
+def protect_for_csv(df):
+    df = df.copy()
+    for column in df.columns:
+        if not pd.api.types.is_numeric_dtype(df[column]):
+            df[column] = df[column].map(csv_safe)
+    return df
+
+
+@app.route("/reports")
+def reports():
+    items = [
+        {"slug": slug, "title": title, "description": description}
+        for slug, (title, description, _builder) in REPORTS.items()
+    ]
+    return render_template("reports.html", reports=items)
+
+
+@app.route("/reports/download/<slug>")
+def download_report(slug):
+    report = REPORTS.get(slug)
+    if report is None:
+        abort(404)  # no report with that name -> "Not Found" page
+    _title, _description, builder = report
+
+    try:
+        df = builder()
+    except Exception as error:
+        flash(f"Could not create the report: {error}", "danger")
+        return redirect(url_for("reports"))
+
+    # The "\ufeff" at the start is a marker that tells Excel the file is UTF-8,
+    # so names with special characters show correctly.
+    csv_text = "\ufeff" + protect_for_csv(df).to_csv(index=False)
+    filename = f"{slug}_{date.today().isoformat()}.csv"
+
+    return Response(
+        csv_text,
+        mimetype="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ---------------------------------------------------------------------------
