@@ -1,0 +1,201 @@
+{% extends "base.html" %}
+
+{% block title %}{{ case.id }} - AICTE Complaint Monitor{% endblock %}
+
+{% block content %}
+
+<!-- Page heading -->
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h3 class="mb-0">
+        Case {{ case.id }}
+        {% if case.is_escalated %}<span class="badge bg-danger ms-2">Escalated</span>{% endif %}
+    </h3>
+    <a href="/cases" class="btn btn-outline-secondary btn-sm">Back to cases</a>
+</div>
+
+<!-- Yellow banner, only if linked cases exist -->
+{% if linked_cases %}
+<div class="alert alert-warning">
+    <h5 class="alert-heading">Potential Overlapping Cases &ndash; Coordination Required</h5>
+    <div class="table-responsive">
+        <table class="table table-sm table-warning align-middle mb-0">
+            <thead>
+                <tr>
+                    <th>Case</th>
+                    <th>Bureau / Cell</th>
+                    <th>Officer</th>
+                    <th>Status</th>
+                    <th>Why linked</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for item in linked_cases %}
+                <tr>
+                    <td><a href="/cases/{{ item.case.id }}">{{ item.case.id }}</a></td>
+                    <td>{{ item.case.current_bureau.name if item.case.current_bureau else '-' }}</td>
+                    <td>{{ item.case.officer.name if item.case.officer else 'Unassigned' }}</td>
+                    <td>{{ item.case.status or '-' }}</td>
+                    <td>
+                        {{ item.link.reason or '-' }}
+                        {% if item.link.match_score is not none %}
+                            <span class="text-muted">(score {{ item.link.match_score }})</span>
+                        {% endif %}
+                        {% if item.link.review_state == 'confirmed' %}
+                            <span class="badge bg-dark">Confirmed</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+<!-- All case fields -->
+<div class="card shadow-sm mb-4">
+    <div class="card-header fw-semibold">Case details</div>
+    <div class="card-body">
+        <div class="row">
+            <div class="col-md-6">
+                <table class="table table-borderless table-sm mb-0">
+                    <tr><th style="width:40%">Case ID</th><td>{{ case.id }}</td></tr>
+                    <tr><th>Institution</th><td>{{ case.institution.name }}</td></tr>
+                    <tr><th>AICTE Permanent ID</th><td>{{ case.institution.id }}</td></tr>
+                    <tr><th>City / State</th><td>{{ case.institution.city or '-' }}, {{ case.institution.state or '-' }}</td></tr>
+                    <tr><th>Region</th><td>{{ case.institution.region or '-' }}</td></tr>
+                    <tr><th>Category</th><td>{{ case.category or '-' }}</td></tr>
+                    <tr><th>Status</th><td>{{ case.status or '-' }}</td></tr>
+                    <tr><th>Bureau / Cell</th><td>{{ case.current_bureau.name if case.current_bureau else '-' }}</td></tr>
+                </table>
+            </div>
+            <div class="col-md-6">
+                <table class="table table-borderless table-sm mb-0">
+                    <tr><th style="width:40%">Officer</th><td>{{ case.officer.name if case.officer else 'Unassigned' }}</td></tr>
+                    <tr><th>Received on</th><td>{{ case.received_on.strftime('%d %b %Y') if case.received_on else '-' }}</td></tr>
+                    <tr><th>Expected disposal</th><td>{{ case.expected_disposal_on.strftime('%d %b %Y') if case.expected_disposal_on else '-' }}</td></tr>
+                    <tr><th>Last action</th><td>{{ case.last_action_summary or '-' }}</td></tr>
+                    <tr><th>Last action on</th><td>{{ case.last_action_on.strftime('%d %b %Y, %H:%M') + ' UTC' if case.last_action_on else '-' }}</td></tr>
+                    <tr><th>Next action required</th><td>{{ case.next_action_required or '-' }}</td></tr>
+                    <tr><th>Escalated</th><td>{{ 'Yes' if case.is_escalated else 'No' }}</td></tr>
+                    <tr><th>Overlap flag</th><td>{{ 'Yes' if case.overlap_flag else 'No' }}</td></tr>
+                </table>
+            </div>
+        </div>
+        <hr>
+        <h6>Description</h6>
+        <p class="mb-0" style="white-space: pre-wrap;">{{ case.description or 'No description.' }}</p>
+    </div>
+</div>
+
+<!-- Action history (read-only: there are no edit or delete buttons anywhere) -->
+<div class="card shadow-sm mb-4">
+    <div class="card-header fw-semibold">Action history <span class="text-muted fw-normal">(oldest first, newest at the bottom; times are UTC)</span></div>
+    <div class="table-responsive">
+        <table class="table table-striped align-middle mb-0">
+            <thead>
+                <tr>
+                    <th>When</th>
+                    <th>Who</th>
+                    <th>Action</th>
+                    <th>From &rarr; To</th>
+                    <th>Remarks</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for a in case.actions %}
+                <tr>
+                    <td class="text-nowrap">{{ a.performed_at.strftime('%d %b %Y, %H:%M') if a.performed_at else '-' }}</td>
+                    <td>{{ user_names.get(a.performed_by, 'Unknown') }}</td>
+                    <td>{{ a.action_type or '-' }}</td>
+                    <td>
+                        {% if a.from_bureau_id or a.to_bureau_id %}
+                            {{ bureau_names.get(a.from_bureau_id, '-') }} &rarr; {{ bureau_names.get(a.to_bureau_id, '-') }}
+                        {% else %}-{% endif %}
+                    </td>
+                    <td style="white-space: pre-wrap;">{{ a.remarks or '-' }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="5" class="text-center text-muted py-3">No actions recorded yet.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- The four action forms -->
+<h5 class="mb-3">Take action</h5>
+<div class="row g-3 mb-5">
+
+    <!-- 1. Add a remark -->
+    <div class="col-md-6">
+        <div class="card h-100 shadow-sm">
+            <div class="card-body">
+                <h6 class="card-title">Add a remark</h6>
+                <form method="POST" action="{{ url_for('add_remark', case_id=case.id) }}">
+                    <textarea class="form-control mb-2" name="remarks" rows="3" placeholder="Type your remark..." required></textarea>
+                    <button type="submit" class="btn btn-primary btn-sm">Add remark</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- 2. Change status -->
+    <div class="col-md-6">
+        <div class="card h-100 shadow-sm">
+            <div class="card-body">
+                <h6 class="card-title">Change status</h6>
+                <form method="POST" action="{{ url_for('change_status', case_id=case.id) }}">
+                    <select class="form-select mb-2" name="status" required>
+                        <option value="">Choose new status...</option>
+                        {% for s in statuses %}
+                        <option value="{{ s }}" {% if s == case.status %}disabled{% endif %}>{{ s }}{% if s == case.status %} (current){% endif %}</option>
+                        {% endfor %}
+                    </select>
+                    <textarea class="form-control mb-2" name="remarks" rows="2" placeholder="Remarks (optional)"></textarea>
+                    <button type="submit" class="btn btn-primary btn-sm">Change status</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- 3. Transfer to another Bureau / Cell -->
+    <div class="col-md-6">
+        <div class="card h-100 shadow-sm">
+            <div class="card-body">
+                <h6 class="card-title">Transfer to another Bureau / Cell</h6>
+                <form method="POST" action="{{ url_for('transfer_case', case_id=case.id) }}">
+                    <select class="form-select mb-2" name="to_bureau" required>
+                        <option value="">Choose Bureau / Cell...</option>
+                        {% for b in bureaus %}
+                        {% if b.id != case.current_bureau_id %}
+                        <option value="{{ b.id }}">{{ b.name }}</option>
+                        {% endif %}
+                        {% endfor %}
+                    </select>
+                    <textarea class="form-control mb-2" name="remarks" rows="2" placeholder="Remarks (optional)"></textarea>
+                    <button type="submit" class="btn btn-primary btn-sm">Transfer</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- 4. Escalate -->
+    <div class="col-md-6">
+        <div class="card h-100 shadow-sm">
+            <div class="card-body">
+                <h6 class="card-title">Escalate</h6>
+                {% if case.is_escalated %}
+                    <p class="text-muted mb-0">This case has already been escalated.</p>
+                {% else %}
+                <form method="POST" action="{{ url_for('escalate_case', case_id=case.id) }}">
+                    <textarea class="form-control mb-2" name="remarks" rows="2" placeholder="Reason for escalation (required)" required></textarea>
+                    <button type="submit" class="btn btn-danger btn-sm">Escalate case</button>
+                </form>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+</div>
+{% endblock %}

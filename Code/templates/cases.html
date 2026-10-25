@@ -1,0 +1,166 @@
+{% extends "base.html" %}
+
+{% block title %}Cases - AICTE Complaint Monitor{% endblock %}
+
+{% block content %}
+<h3 class="mb-3">Cases</h3>
+
+<!-- Search / filter form -->
+<form method="GET" action="/cases" class="card card-body shadow-sm mb-4">
+    <div class="row g-3">
+
+        <div class="col-md-4">
+            <label class="form-label" for="institution">Institution name</label>
+            <input type="text" class="form-control" id="institution" name="institution"
+                   value="{{ f.institution }}" placeholder="e.g. Institute of Technology">
+        </div>
+
+        <div class="col-md-4">
+            <label class="form-label" for="institution_id">AICTE Permanent ID</label>
+            <input type="text" class="form-control" id="institution_id" name="institution_id"
+                   value="{{ f.institution_id }}">
+        </div>
+
+        <div class="col-md-4">
+            <label class="form-label" for="case_id">Case ID</label>
+            <input type="text" class="form-control" id="case_id" name="case_id"
+                   value="{{ f.case_id }}" placeholder="e.g. CMP-2026-0001">
+        </div>
+
+        <div class="col-md-3">
+            <label class="form-label" for="bureau">Bureau / Cell</label>
+            <select class="form-select" id="bureau" name="bureau">
+                <option value="">All</option>
+                {% for b in bureaus %}
+                <option value="{{ b.id }}" {% if f.bureau == b.id|string %}selected{% endif %}>{{ b.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="col-md-3">
+            <label class="form-label" for="region">Region</label>
+            <select class="form-select" id="region" name="region">
+                <option value="">All</option>
+                {% for r in regions %}
+                <option value="{{ r }}" {% if f.region == r %}selected{% endif %}>{{ r }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="col-md-3">
+            <label class="form-label" for="category">Category</label>
+            <select class="form-select" id="category" name="category">
+                <option value="">All</option>
+                {% for c in categories %}
+                <option value="{{ c }}" {% if f.category == c %}selected{% endif %}>{{ c }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="col-md-3">
+            <label class="form-label" for="status">Status</label>
+            <select class="form-select" id="status" name="status">
+                <option value="">All</option>
+                {% for s in statuses %}
+                <option value="{{ s }}" {% if f.status == s %}selected{% endif %}>{{ s }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="col-md-3">
+            <label class="form-label" for="date_from">Received from</label>
+            <input type="date" class="form-control" id="date_from" name="date_from" value="{{ f.date_from }}">
+        </div>
+
+        <div class="col-md-3">
+            <label class="form-label" for="date_to">Received to</label>
+            <input type="date" class="form-control" id="date_to" name="date_to" value="{{ f.date_to }}">
+        </div>
+
+        <div class="col-md-6 d-flex align-items-end gap-2">
+            <button type="submit" class="btn btn-primary">Search</button>
+            <a href="/cases" class="btn btn-outline-secondary">Clear</a>
+        </div>
+
+    </div>
+</form>
+
+<!-- How many results -->
+<p class="text-muted">
+    {{ pagination.total }} case{{ '' if pagination.total == 1 else 's' }} found
+    {% if pagination.total > 0 %}
+        (page {{ pagination.page }} of {{ pagination.pages }})
+    {% endif %}
+</p>
+
+<!-- Results table -->
+<div class="table-responsive">
+    <table class="table table-striped table-hover align-middle">
+        <thead class="table-dark">
+            <tr>
+                <th>Case ID</th>
+                <th>Institution</th>
+                <th>Category</th>
+                <th>Status</th>
+                <th>Bureau / Cell</th>
+                <th>Officer</th>
+                <th>Received</th>
+                <th>Expected disposal</th>
+                <th>Overlap</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for c in pagination.items %}
+            <tr>
+                <td><a href="/cases/{{ c.id }}">{{ c.id }}</a></td>
+                <td>{{ c.institution.name }}</td>
+                <td>{{ c.category or '-' }}</td>
+                <td>{{ c.status or '-' }}</td>
+                <td>{{ c.current_bureau.name if c.current_bureau else '-' }}</td>
+                <td>{{ c.officer.name if c.officer else 'Unassigned' }}</td>
+                <td>{{ c.received_on.strftime('%d %b %Y') if c.received_on else '-' }}</td>
+                <td>{{ c.expected_disposal_on.strftime('%d %b %Y') if c.expected_disposal_on else '-' }}</td>
+                <td>
+                    {% if c.overlap_flag %}
+                    <span class="badge bg-danger">Overlap</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="9" class="text-center text-muted py-4">No cases match your search.</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<!-- Page numbers -->
+{% if pagination.pages > 1 %}
+<nav>
+    <ul class="pagination justify-content-center">
+
+        <li class="page-item {% if not pagination.has_prev %}disabled{% endif %}">
+            <a class="page-link"
+               href="{{ url_for('cases', page=pagination.prev_num, **active_filters) if pagination.has_prev else '#' }}">Previous</a>
+        </li>
+
+        {% for p in pagination.iter_pages() %}
+            {% if p %}
+            <li class="page-item {% if p == pagination.page %}active{% endif %}">
+                <a class="page-link" href="{{ url_for('cases', page=p, **active_filters) }}">{{ p }}</a>
+            </li>
+            {% else %}
+            <li class="page-item disabled"><span class="page-link">&hellip;</span></li>
+            {% endif %}
+        {% endfor %}
+
+        <li class="page-item {% if not pagination.has_next %}disabled{% endif %}">
+            <a class="page-link"
+               href="{{ url_for('cases', page=pagination.next_num, **active_filters) if pagination.has_next else '#' }}">Next</a>
+        </li>
+
+    </ul>
+</nav>
+{% endif %}
+{% endblock %}
