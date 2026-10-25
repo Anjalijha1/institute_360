@@ -3,6 +3,218 @@
 {% block title %}Dashboard - AICTE Complaint Monitor{% endblock %}
 
 {% block content %}
-<h3>Dashboard</h3>
-<p class="text-muted">Welcome, {{ current_user.name }}. Case summaries and alerts will appear here soon.</p>
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h3 class="mb-0">Dashboard</h3>
+    <a href="/cases/new" class="btn btn-primary btn-sm">Register new case</a>
+</div>
+
+<!-- Filters: these change every number, chart and table on the page -->
+<form method="GET" action="/dashboard" class="card card-body shadow-sm mb-4">
+    <div class="row g-3 align-items-end">
+        <div class="col-md-4">
+            <label class="form-label" for="region">Region</label>
+            <select class="form-select" id="region" name="region">
+                <option value="">All regions</option>
+                {% for r in regions %}
+                <option value="{{ r }}" {% if selected_region == r %}selected{% endif %}>{{ r }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-md-4">
+            <label class="form-label" for="bureau">Bureau / Cell</label>
+            <select class="form-select" id="bureau" name="bureau">
+                <option value="">All Bureaus / Cells</option>
+                {% for b in bureaus %}
+                <option value="{{ b.id }}" {% if selected_bureau == b.id|string %}selected{% endif %}>{{ b.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-md-4 d-flex gap-2">
+            <button type="submit" class="btn btn-primary">Apply</button>
+            <a href="/dashboard" class="btn btn-outline-secondary">Clear</a>
+        </div>
+    </div>
+</form>
+
+<!-- Number cards -->
+<div class="row g-3 mb-4">
+    {% for label, value, colour in cards %}
+    <div class="col-6 col-md-3">
+        <div class="card text-bg-{{ colour }} shadow-sm h-100">
+            <div class="card-body">
+                <div class="small text-uppercase">{{ label }}</div>
+                <div class="display-6 fw-semibold">{{ value }}</div>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+<!-- Charts -->
+<div class="row g-3 mb-4">
+    <div class="col-lg-4">
+        <div class="card shadow-sm h-100">
+            <div class="card-header fw-semibold">Cases by status</div>
+            <div class="card-body">
+                <div style="position: relative; height: 300px;">
+                    <canvas id="statusChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-8">
+        <div class="card shadow-sm h-100">
+            <div class="card-header fw-semibold">Cases per Bureau / Cell</div>
+            <div class="card-body">
+                <div style="position: relative; height: 300px;">
+                    <canvas id="bureauChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card shadow-sm mb-4">
+    <div class="card-header fw-semibold">
+        Received vs disposed, last 12 months
+        <span class="text-muted fw-normal">(disposal month is the month of the case's last action)</span>
+    </div>
+    <div class="card-body">
+        <div style="position: relative; height: 320px;">
+            <canvas id="monthChart"></canvas>
+        </div>
+    </div>
+</div>
+
+<!-- Tables -->
+<div class="row g-3 mb-5">
+    <div class="col-lg-6">
+        <div class="card shadow-sm h-100">
+            <div class="card-header fw-semibold">Latest 5 overlap alerts</div>
+            <div class="table-responsive">
+                <table class="table table-striped align-middle mb-0">
+                    <thead>
+                        <tr>
+                            <th>When</th>
+                            <th>Case</th>
+                            <th>Bureau / Cell</th>
+                            <th>Alert</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for a in alerts %}
+                        {% set sev = (a.severity or '')|lower %}
+                        <tr>
+                            <td class="text-nowrap">{{ a.created_at.strftime('%d %b, %H:%M') if a.created_at else '-' }}</td>
+                            <td>
+                                {% if a.case_id %}<a href="/cases/{{ a.case_id }}">{{ a.case_id }}</a>{% else %}-{% endif %}
+                            </td>
+                            <td>{{ bureau_names.get(a.target_bureau_id, '-') }}</td>
+                            <td>
+                                {% if sev in ['high', 'critical'] %}<span class="badge bg-danger">{{ a.severity }}</span>
+                                {% elif sev == 'medium' %}<span class="badge bg-warning text-dark">{{ a.severity }}</span>
+                                {% elif sev %}<span class="badge bg-secondary">{{ a.severity }}</span>{% endif %}
+                                {% if not a.is_read %}<span class="badge bg-primary">New</span>{% endif %}
+                                {{ a.message or '' }}
+                            </td>
+                        </tr>
+                        {% else %}
+                        <tr><td colspan="4" class="text-center text-muted py-4">No overlap alerts.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="col-lg-6">
+        <div class="card shadow-sm h-100">
+            <div class="card-header fw-semibold">5 open cases nearest to their deadline</div>
+            <div class="table-responsive">
+                <table class="table table-striped align-middle mb-0">
+                    <thead>
+                        <tr>
+                            <th>Case</th>
+                            <th>Institution</th>
+                            <th>Due</th>
+                            <th>Time left</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for item in deadlines %}
+                        <tr>
+                            <td><a href="/cases/{{ item.case.id }}">{{ item.case.id }}</a></td>
+                            <td>{{ item.case.institution.name }}</td>
+                            <td class="text-nowrap">{{ item.case.expected_disposal_on.strftime('%d %b %Y') }}</td>
+                            <td>
+                                {% if item.days < 0 %}
+                                    <span class="badge bg-danger">{{ -item.days }} day{{ '' if item.days == -1 else 's' }} overdue</span>
+                                {% elif item.days == 0 %}
+                                    <span class="badge bg-warning text-dark">Due today</span>
+                                {% else %}
+                                    {{ item.days }} day{{ '' if item.days == 1 else 's' }} left
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% else %}
+                        <tr><td colspan="4" class="text-center text-muted py-4">No open cases with a deadline.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Chart.js, loaded from the internet (a CDN) -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script>
+    // The numbers below are filled in by app.py.
+    const statusData = {{ status_chart|tojson }};
+    const bureauData = {{ bureau_chart|tojson }};
+    const monthData = {{ month_chart|tojson }};
+
+    const palette = ['#0d6efd', '#198754', '#ffc107', '#dc3545', '#6f42c1',
+                     '#20c997', '#fd7e14', '#0dcaf0', '#6c757d', '#d63384'];
+
+    // 1. Doughnut: cases by status
+    new Chart(document.getElementById('statusChart'), {
+        type: 'doughnut',
+        data: {
+            labels: statusData.labels,
+            datasets: [{ data: statusData.values, backgroundColor: palette }]
+        },
+        options: { maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } } }
+    });
+
+    // 2. Bar: cases per Bureau / Cell
+    new Chart(document.getElementById('bureauChart'), {
+        type: 'bar',
+        data: {
+            labels: bureauData.labels,
+            datasets: [{ label: 'Cases', data: bureauData.values, backgroundColor: '#0d6efd' }]
+        },
+        options: {
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: { y: { beginAtZero: true, ticks: { precision: 0 } } }
+        }
+    });
+
+    // 3. Line: received vs disposed per month
+    new Chart(document.getElementById('monthChart'), {
+        type: 'line',
+        data: {
+            labels: monthData.labels,
+            datasets: [
+                { label: 'Received', data: monthData.received, borderColor: '#0d6efd', backgroundColor: '#0d6efd', tension: 0.25 },
+                { label: 'Disposed', data: monthData.disposed, borderColor: '#198754', backgroundColor: '#198754', tension: 0.25 }
+            ]
+        },
+        options: {
+            maintainAspectRatio: false,
+            scales: { y: { beginAtZero: true, ticks: { precision: 0 } } }
+        }
+    });
+</script>
 {% endblock %}

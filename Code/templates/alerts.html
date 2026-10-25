@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+
+{% block title %}Alerts - AICTE Complaint Monitor{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h3 class="mb-0">Alerts</h3>
+
+    <form method="POST" action="{{ url_for('run_checks') }}">
+        <button type="submit" class="btn btn-primary btn-sm">Run checks now</button>
+    </form>
+</div>
+
+<!-- All / Unread switch -->
+<ul class="nav nav-pills mb-3">
+    <li class="nav-item">
+        <a class="nav-link {% if not unread_only %}active{% endif %}" href="{{ url_for('alerts') }}">All</a>
+    </li>
+    <li class="nav-item">
+        <a class="nav-link {% if unread_only %}active{% endif %}" href="{{ url_for('alerts', unread='1') }}">
+            Unread <span class="badge bg-primary">{{ unread_count }}</span>
+        </a>
+    </li>
+</ul>
+
+<p class="text-muted">
+    {{ pagination.total }} alert{{ '' if pagination.total == 1 else 's' }}
+    {% if pagination.total > 0 %}(page {{ pagination.page }} of {{ pagination.pages }}){% endif %}
+</p>
+
+<div class="table-responsive">
+    <table class="table table-striped align-middle">
+        <thead class="table-dark">
+            <tr>
+                <th>When (UTC)</th>
+                <th>Type</th>
+                <th>Severity</th>
+                <th>Case</th>
+                <th>Institution</th>
+                <th>Bureau / Cell</th>
+                <th>Message</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for a in pagination.items %}
+            {% set sev = (a.severity or '')|lower %}
+            <tr class="{% if not a.is_read %}fw-semibold{% endif %}">
+                <td class="text-nowrap">{{ a.created_at.strftime('%d %b %Y, %H:%M') if a.created_at else '-' }}</td>
+                <td>{{ (a.alert_type|replace('_', ' ')|title) if a.alert_type else '-' }}</td>
+                <td>
+                    {% if sev in ['high', 'critical'] %}<span class="badge bg-danger">{{ a.severity }}</span>
+                    {% elif sev == 'medium' %}<span class="badge bg-warning text-dark">{{ a.severity }}</span>
+                    {% elif sev %}<span class="badge bg-secondary">{{ a.severity }}</span>
+                    {% else %}-{% endif %}
+                </td>
+                <td>{% if a.case_id %}<a href="/cases/{{ a.case_id }}">{{ a.case_id }}</a>{% else %}-{% endif %}</td>
+                <td>{{ institution_names.get(a.institution_id, '-') }}</td>
+                <td>{{ bureau_names.get(a.target_bureau_id, '-') }}</td>
+                <td>
+                    {% if not a.is_read %}<span class="badge bg-primary">New</span>{% endif %}
+                    {{ a.message or '' }}
+                </td>
+                <td class="text-nowrap">
+                    {% if not a.is_read %}
+                    <form method="POST" action="{{ url_for('mark_alert_read', alert_id=a.id) }}">
+                        <input type="hidden" name="page" value="{{ pagination.page }}">
+                        <input type="hidden" name="unread" value="{{ '1' if unread_only else '' }}">
+                        <button type="submit" class="btn btn-outline-secondary btn-sm">Mark as read</button>
+                    </form>
+                    {% else %}
+                    <span class="text-muted small">Read</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% else %}
+            <tr>
+                <td colspan="8" class="text-center text-muted py-4">
+                    {% if unread_only %}No unread alerts.{% else %}No alerts yet. Press "Run checks now" to look for deadline alerts.{% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<!-- Page numbers -->
+{% if pagination.pages > 1 %}
+<nav>
+    <ul class="pagination justify-content-center">
+
+        <li class="page-item {% if not pagination.has_prev %}disabled{% endif %}">
+            <a class="page-link"
+               href="{{ url_for('alerts', page=pagination.prev_num, unread=('1' if unread_only else None)) if pagination.has_prev else '#' }}">Previous</a>
+        </li>
+
+        {% for p in pagination.iter_pages() %}
+            {% if p %}
+            <li class="page-item {% if p == pagination.page %}active{% endif %}">
+                <a class="page-link" href="{{ url_for('alerts', page=p, unread=('1' if unread_only else None)) }}">{{ p }}</a>
+            </li>
+            {% else %}
+            <li class="page-item disabled"><span class="page-link">&hellip;</span></li>
+            {% endif %}
+        {% endfor %}
+
+        <li class="page-item {% if not pagination.has_next %}disabled{% endif %}">
+            <a class="page-link"
+               href="{{ url_for('alerts', page=pagination.next_num, unread=('1' if unread_only else None)) if pagination.has_next else '#' }}">Next</a>
+        </li>
+
+    </ul>
+</nav>
+{% endif %}
+{% endblock %}

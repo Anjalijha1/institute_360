@@ -1,12 +1,15 @@
+import os
+import threading
 from datetime import datetime, date, timedelta
 
+from apscheduler.schedulers.background import BackgroundScheduler
 from flask import Flask, render_template, request, redirect, url_for, flash
 from flask_login import LoginManager, login_user, logout_user, current_user
-from sqlalchemy import event, or_
+from sqlalchemy import event, or_, func, select
 from sqlalchemy.exc import IntegrityError
 from werkzeug.security import check_password_hash
 
-from models import db, User, Case, CaseAction, CaseLink, Institution, Bureau
+from models import db, User, Case, CaseAction, CaseLink, Institution, Bureau, Alert
 from overlap import run_overlap_check
 
 app = Flask(__name__)
@@ -90,10 +93,178 @@ def logout():
     return redirect(url_for("login"))
 
 
+# ---------------------------------------------------------------------------
+# DASHBOARD PAGE
+# ---------------------------------------------------------------------------
+
+# Which statuses belong to which dashboard card.
+# If your data uses other status names, change them here.
+STATUS_GROUPS = {
+    "Pending": ["Received", "Pending", "Pending Information"],
+    "Under Process": ["Under Process", "Under Review", "Action Taken"],
+    "Disposed": ["Disposed", "Closed"],
+}
+DISPOSED_STATUSES = STATUS_GROUPS["Disposed"]
+
+
+def dashboard_cases(region, bureau_id):
+    # Starts with all cases, then narrows to the chosen region and Bureau / Cell.
+    # Every number and chart on the dashboard starts from this, so one filter
+    # changes everything at once.
+    query = Case.query.join(Institution)
+    if region:
+        query = query.filter(Institution.region == region)
+    if bureau_id:
+        query = query.filter(Case.current_bureau_id == bureau_id)
+    return query
+
+
+def last_12_months(today):
+    # Returns keys like "2025-11", "2025-12", ... "2026-10", oldest first.
+    keys = []
+    year, month = today.year, today.month
+    for _ in range(12):
+        keys.append(f"{year}-{month:02d}")
+        month -= 1
+        if month == 0:
+            month = 12
+            year -= 1
+    keys.reverse()
+    return keys
+
+
 @app.route("/dashboard")
 def dashboard():
-    # Placeholder page for now.
-    return render_template("dashboard.html")
+    # 1. Read the filters (they come from the address bar).
+    region = request.args.get("region", "").strip()
+    bureau_arg = request.args.get("bureau", "").strip()
+    bureau_id = int(bureau_arg) if bureau_arg.isdigit() else None
+    today = date.today()
+
+    def base():
+        # A fresh list of the cases that match the filters.
+        return dashboard_cases(region, bureau_id)
+
+    # "Not disposed" means the status is empty or not in the Disposed group.
+    not_disposed = or_(Case.status.is_(None), Case.status.notin_(DISPOSED_STATUSES))
+
+    # Case IDs that have at least one "Transfer" row in their history.
+    transferred_ids = select(CaseAction.case_id).where(CaseAction.action_type == "Transfer")
+
+    # 2. The number cards: (label, number, Bootstrap colour).
+    cards = [
+        ("Total cases", base().count(), "primary"),
+        ("Pending", base().filter(Case.status.in_(STATUS_GROUPS["Pending"])).count(), "secondary"),
+        ("Under Process", base().filter(Case.status.in_(STATUS_GROUPS["Under Process"])).count(), "info"),
+        ("Disposed", base().filter(Case.status.in_(DISPOSED_STATUSES)).count(), "success"),
+        ("Transferred", base().filter(Case.id.in_(transferred_ids)).count(), "dark"),
+        ("Escalated", base().filter(Case.is_escalated.is_(True)).count(), "warning"),
+        (
+            "Overdue",
+            base().filter(Case.expected_disposal_on < today, not_disposed).count(),
+            "danger",
+        ),
+        ("Active overlaps", base().filter(Case.overlap_flag.is_(True)).count(), "danger"),
+    ]
+
+    bureau_names = {b.id: b.name for b in Bureau.query.all()}
+
+    # 3. Doughnut chart: how many cases have each status.
+    status_rows = (
+        base()
+        .with_entities(Case.status, func.count(Case.id))
+        .group_by(Case.status)
+        .all()
+    )
+    status_chart = {
+        "labels": [row[0] or "No status" for row in status_rows],
+        "values": [row[1] for row in status_rows],
+    }
+
+    # 4. Bar chart: how many cases each Bureau / Cell holds (biggest first).
+    bureau_rows = (
+        base()
+        .with_entities(Case.current_bureau_id, func.count(Case.id))
+        .group_by(Case.current_bureau_id)
+        .all()
+    )
+    bureau_rows = sorted(bureau_rows, key=lambda row: row[1], reverse=True)
+    bureau_chart = {
+        "labels": [bureau_names.get(row[0], "No Bureau") for row in bureau_rows],
+        "values": [row[1] for row in bureau_rows],
+    }
+
+    # 5. Line chart: cases received and cases disposed in each of the last 12 months.
+    month_keys = last_12_months(today)
+    received_by_month = dict.fromkeys(month_keys, 0)
+    disposed_by_month = dict.fromkeys(month_keys, 0)
+    month_rows = base().with_entities(Case.received_on, Case.status, Case.last_action_on).all()
+    for received_on, status, last_action_on in month_rows:
+        if received_on:
+            key = received_on.strftime("%Y-%m")
+            if key in received_by_month:
+                received_by_month[key] += 1
+        if status in DISPOSED_STATUSES and last_action_on:
+            key = last_action_on.strftime("%Y-%m")
+            if key in disposed_by_month:
+                disposed_by_month[key] += 1
+    month_chart = {
+        "labels": [datetime.strptime(k, "%Y-%m").strftime("%b %Y") for k in month_keys],
+        "received": [received_by_month[k] for k in month_keys],
+        "disposed": [disposed_by_month[k] for k in month_keys],
+    }
+
+    # 6. Table: the 5 newest overlap alerts.
+    #    outerjoin keeps alerts even if they have no case attached.
+    alert_query = (
+        Alert.query.outerjoin(Case, Alert.case_id == Case.id)
+        .outerjoin(Institution, Case.institution_id == Institution.id)
+        .filter(Alert.alert_type.ilike("%overlap%"))
+    )
+    if region:
+        alert_query = alert_query.filter(Institution.region == region)
+    if bureau_id:
+        alert_query = alert_query.filter(
+            or_(Alert.target_bureau_id == bureau_id, Case.current_bureau_id == bureau_id)
+        )
+    alerts = alert_query.order_by(Alert.created_at.desc()).limit(5).all()
+
+    # 7. Table: the 5 open cases with the earliest deadline.
+    #    Overdue cases have the earliest dates, so they appear first.
+    deadline_cases = (
+        base()
+        .filter(Case.expected_disposal_on.isnot(None), not_disposed)
+        .order_by(Case.expected_disposal_on)
+        .limit(5)
+        .all()
+    )
+    deadlines = [
+        {"case": c, "days": (c.expected_disposal_on - today).days} for c in deadline_cases
+    ]
+
+    # 8. Fill the two filter dropdowns with the real values in the database.
+    regions = [
+        row[0]
+        for row in db.session.query(Institution.region)
+        .filter(Institution.region.isnot(None))
+        .distinct()
+        .order_by(Institution.region)
+    ]
+
+    return render_template(
+        "dashboard.html",
+        cards=cards,
+        status_chart=status_chart,
+        bureau_chart=bureau_chart,
+        month_chart=month_chart,
+        alerts=alerts,
+        deadlines=deadlines,
+        bureaus=Bureau.query.order_by(Bureau.name).all(),
+        bureau_names=bureau_names,
+        regions=regions,
+        selected_region=region,
+        selected_bureau=str(bureau_id) if bureau_id else "",
+    )
 
 
 def parse_date(text):
@@ -202,7 +373,7 @@ def cases():
 
 # The statuses offered in the "change status" box. Any status that already
 # exists in your database is added to this list automatically.
-DEFAULT_STATUSES = ["Received", "Under Review", "Action Taken", "Pending Information", "Closed"]
+DEFAULT_STATUSES = ["Received", "Pending", "Under Process", "Disposed"]
 
 
 def status_choices():
@@ -536,5 +707,221 @@ def new_case():
     )
 
 
+# ---------------------------------------------------------------------------
+# ALERTS PAGE AND DEADLINE CHECKS
+# ---------------------------------------------------------------------------
+
+REMINDER_AFTER_DAYS = 7        # no action for this many days -> pending reminder
+APPROACHING_WITHIN_DAYS = 3    # due within this many days -> approaching deadline
+
+# A "lock" makes sure only one check runs at a time. Without it, pressing the
+# button at the same moment the timer fires could create the same alert twice.
+check_lock = threading.Lock()
+
+
+def alert_exists(case_id, alert_type, since=None):
+    # Is there already an alert of this type for this case?
+    # If "since" is given, only alerts created after that moment count.
+    query = Alert.query.filter_by(case_id=case_id, alert_type=alert_type)
+    if since is not None:
+        query = query.filter(Alert.created_at >= since)
+    return query.first() is not None
+
+
+def add_alert(case, alert_type, severity, message, now):
+    # Adds one alert row. The caller saves everything with one commit at the end.
+    db.session.add(
+        Alert(
+            alert_type=alert_type,
+            case_id=case.id,
+            institution_id=case.institution_id,
+            target_bureau_id=case.current_bureau_id,
+            message=message[:250],  # the column holds at most 250 characters
+            severity=severity,
+            created_at=now,
+            is_read=False,
+        )
+    )
+
+
+def check_deadlines():
+    # Looks at every open case and creates alerts for three situations:
+    #   1. pending_reminder     - no action for 7 days
+    #   2. deadline_approaching - due today or within the next 3 days
+    #   3. deadline_breached    - the due date has already passed
+    # Returns how many NEW alerts of each kind were created.
+    with check_lock:
+        now = datetime.utcnow()
+        today = date.today()
+        created = {"pending_reminder": 0, "deadline_approaching": 0, "deadline_breached": 0}
+
+        # Only cases that are not disposed.
+        open_cases = Case.query.filter(
+            or_(Case.status.is_(None), Case.status.notin_(DISPOSED_STATUSES))
+        ).all()
+
+        for case in open_cases:
+            # --- 1. No action for 7 days ---
+            # If the case has no recorded action, count from the received date.
+            last_activity = case.last_action_on
+            if last_activity is None and case.received_on:
+                last_activity = datetime.combine(case.received_on, datetime.min.time())
+
+            if last_activity and now - last_activity >= timedelta(days=REMINDER_AFTER_DAYS):
+                # since=last_activity: an old reminder only blocks a new one
+                # if nothing has happened on the case since that reminder.
+                if not alert_exists(case.id, "pending_reminder", since=last_activity):
+                    days_idle = (now - last_activity).days
+                    add_alert(
+                        case,
+                        "pending_reminder",
+                        "low",
+                        f"Case {case.id} has had no action for {days_idle} days. Please update it.",
+                        now,
+                    )
+                    created["pending_reminder"] += 1
+
+            # --- 2 and 3. Deadline ---
+            if case.expected_disposal_on:
+                days_left = (case.expected_disposal_on - today).days
+                due = case.expected_disposal_on.strftime("%d %b %Y")
+
+                if days_left < 0:
+                    if not alert_exists(case.id, "deadline_breached"):
+                        late = -days_left
+                        add_alert(
+                            case,
+                            "deadline_breached",
+                            "high",
+                            f"Case {case.id} is {late} day{'' if late == 1 else 's'} past its deadline of {due}.",
+                            now,
+                        )
+                        created["deadline_breached"] += 1
+                elif days_left <= APPROACHING_WITHIN_DAYS:
+                    if not alert_exists(case.id, "deadline_approaching"):
+                        if days_left == 0:
+                            when = "today"
+                        else:
+                            when = f"in {days_left} day{'' if days_left == 1 else 's'}"
+                        add_alert(
+                            case,
+                            "deadline_approaching",
+                            "medium",
+                            f"Case {case.id} is due {when} ({due}).",
+                            now,
+                        )
+                        created["deadline_approaching"] += 1
+
+        db.session.commit()
+        return created
+
+
+@app.route("/alerts")
+def alerts():
+    page = request.args.get("page", 1, type=int)
+    unread_only = request.args.get("unread") == "1"
+
+    query = Alert.query
+    if unread_only:
+        query = query.filter(Alert.is_read.isnot(True))
+
+    # Newest alerts first, 20 per page.
+    pagination = query.order_by(Alert.created_at.desc(), Alert.id.desc()).paginate(
+        page=page, per_page=20, error_out=False
+    )
+
+    # Alerts only store id numbers, so look up the Institution names
+    # for the alerts on this page.
+    institution_ids = {a.institution_id for a in pagination.items if a.institution_id}
+    institution_names = {}
+    if institution_ids:
+        institution_names = {
+            i.id: i.name
+            for i in Institution.query.filter(Institution.id.in_(institution_ids)).all()
+        }
+
+    return render_template(
+        "alerts.html",
+        pagination=pagination,
+        unread_only=unread_only,
+        unread_count=Alert.query.filter(Alert.is_read.isnot(True)).count(),
+        bureau_names={b.id: b.name for b in Bureau.query.all()},
+        institution_names=institution_names,
+    )
+
+
+@app.route("/alerts/<int:alert_id>/read", methods=["POST"])
+def mark_alert_read(alert_id):
+    alert = db.get_or_404(Alert, alert_id)
+    alert.is_read = True
+    db.session.commit()
+
+    # Go back to the same page and the same All / Unread view.
+    page = request.form.get("page", 1, type=int)
+    unread = "1" if request.form.get("unread") == "1" else None
+    return redirect(url_for("alerts", page=page, unread=unread))
+
+
+@app.route("/alerts/run-checks", methods=["POST"])
+def run_checks():
+    try:
+        created = check_deadlines()
+    except Exception as error:
+        db.session.rollback()
+        flash(f"The checks failed: {error}", "danger")
+        return redirect(url_for("alerts"))
+
+    total = sum(created.values())
+    if total == 0:
+        flash("Checks finished. No new alerts were needed.", "info")
+    else:
+        flash(
+            f"Checks finished. {total} new alert{'' if total == 1 else 's'}: "
+            f"{created['pending_reminder']} reminder(s), "
+            f"{created['deadline_approaching']} approaching deadline(s), "
+            f"{created['deadline_breached']} breached deadline(s).",
+            "success",
+        )
+    return redirect(url_for("alerts"))
+
+
+# ---------------------------------------------------------------------------
+# THE TIMER (runs check_deadlines every 10 minutes)
+# ---------------------------------------------------------------------------
+
+def scheduled_check():
+    # The timer runs this outside any web page, so it needs its own
+    # "app context" (it lets the code use the database).
+    with app.app_context():
+        try:
+            created = check_deadlines()
+            print(f"[timer] Deadline check done: {sum(created.values())} new alert(s).")
+        except Exception as error:
+            db.session.rollback()
+            print(f"[timer] Deadline check failed: {error}")
+
+
+def start_scheduler():
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(
+        scheduled_check,
+        "interval",
+        minutes=10,
+        id="deadline_checks",
+        max_instances=1,  # never run two at once
+        coalesce=True,    # if several runs were missed, run just once
+    )
+    scheduler.start()
+    print("[timer] Started: deadline checks will run every 10 minutes.")
+    return scheduler
+
+
+DEBUG = True
+
 if __name__ == "__main__":
-    app.run(debug=True)
+    # In debug mode, Flask starts the program TWICE (a helper copy that
+    # restarts it when you save a file, and the real one). We start the timer
+    # only in the real one, so it doesn't run twice.
+    if not DEBUG or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        start_scheduler()
+    app.run(debug=DEBUG)
