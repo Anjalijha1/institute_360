@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+
+{% block title %}New case - AICTE Complaint Monitor{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h3 class="mb-0">Register a new case</h3>
+    <a href="/cases" class="btn btn-outline-secondary btn-sm">Back to cases</a>
+</div>
+
+<form method="POST" action="{{ url_for('new_case') }}" class="card card-body shadow-sm">
+    <div class="row g-3">
+
+        <div class="col-md-8">
+            <label class="form-label" for="institution_id">Institution</label>
+            <select class="form-select" id="institution_id" name="institution_id" required>
+                <option value="">Choose an institution...</option>
+                {% for inst in institutions %}
+                <option value="{{ inst.id }}" {% if form.institution_id == inst.id %}selected{% endif %}>
+                    {{ inst.name }} ({{ inst.id }})
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="col-md-4">
+            <label class="form-label" for="category">Category</label>
+            <select class="form-select" id="category" name="category" required>
+                <option value="">Choose a category...</option>
+                {% for name, days in category_days.items() %}
+                <option value="{{ name }}" {% if form.category == name %}selected{% endif %}>
+                    {{ name }} ({{ days }} days)
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="col-12">
+            <label class="form-label" for="description">Description of the complaint</label>
+            <textarea class="form-control" id="description" name="description" rows="5" required>{{ form.description }}</textarea>
+        </div>
+
+        <div class="col-md-4">
+            <label class="form-label" for="received_on">Received on</label>
+            <input type="date" class="form-control" id="received_on" name="received_on"
+                   value="{{ form.received_on }}" max="{{ form.received_on if false else '' }}" required>
+        </div>
+
+        <div class="col-md-8">
+            <label class="form-label" for="bureau">Bureau / Cell</label>
+            {% if current_user.bureau_id %}
+                <input type="text" class="form-control" value="{{ current_user.bureau.name }}" disabled>
+                <div class="form-text">The case will go to your own Bureau / Cell.</div>
+            {% else %}
+                <select class="form-select" id="bureau" name="bureau" required>
+                    <option value="">Choose a Bureau / Cell...</option>
+                    {% for b in bureaus %}
+                    <option value="{{ b.id }}" {% if form.bureau == b.id|string %}selected{% endif %}>{{ b.name }}</option>
+                    {% endfor %}
+                </select>
+                <div class="form-text">Your account is not linked to a Bureau / Cell, so please choose one.</div>
+            {% endif %}
+        </div>
+
+        <div class="col-12">
+            <button type="submit" class="btn btn-primary">Save case</button>
+            <a href="/cases" class="btn btn-outline-secondary">Cancel</a>
+        </div>
+
+    </div>
+</form>
+{% endblock %}
