@@ -3,13 +3,18 @@
 {% block title %}Dashboard - AICTE Complaint Monitor{% endblock %}
 
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
-    <h3 class="mb-0">Dashboard</h3>
+
+<!-- Page title -->
+<div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-4">
+    <div>
+        <h1 class="page-title">Dashboard</h1>
+        <p class="page-sub">Live overview of cases, deadlines and overlaps across regions and Bureaus.</p>
+    </div>
     <a href="/cases/new" class="btn btn-primary btn-sm">Register new case</a>
 </div>
 
 <!-- Filters: these change every number, chart and table on the page -->
-<form method="GET" action="/dashboard" class="card card-body shadow-sm mb-4">
+<form method="GET" action="/dashboard" class="card card-body mb-4">
     <div class="row g-3 align-items-end">
         <div class="col-md-4">
             <label class="form-label" for="region">Region</label>
@@ -36,15 +41,28 @@
     </div>
 </form>
 
-<!-- Number cards -->
+<!-- KPI cards.
+     app.py sends the numbers as "cards" (label, value, colour).
+     The colour and icon of each card are picked here from its label. -->
+{% set kpi_style = {
+    'Total cases':     ('kpi-cyan',   'bi-folder2-open'),
+    'Pending':         ('kpi-yellow', 'bi-hourglass-split'),
+    'Under Process':   ('kpi-green',  'bi-arrow-repeat'),
+    'Disposed':        ('kpi-purple', 'bi-check2-circle'),
+    'Transferred':     ('kpi-purple', 'bi-arrow-left-right'),
+    'Escalated':       ('kpi-red',    'bi-exclamation-triangle'),
+    'Overdue':         ('kpi-red',    'bi-clock-history'),
+    'Active overlaps': ('kpi-yellow', 'bi-intersect')
+} %}
+
 <div class="row g-3 mb-4">
     {% for label, value, colour in cards %}
-    <div class="col-6 col-md-3">
-        <div class="card text-bg-{{ colour }} shadow-sm h-100">
-            <div class="card-body">
-                <div class="small text-uppercase">{{ label }}</div>
-                <div class="display-6 fw-semibold">{{ value }}</div>
-            </div>
+    {% set style = kpi_style.get(label, ('kpi-cyan', 'bi-folder2-open')) %}
+    <div class="col-6 col-md-4 col-xl-3">
+        <div class="card kpi-card {{ style[0] }}">
+            <div class="kpi-icon"><i class="bi {{ style[1] }}"></i></div>
+            <div class="kpi-value">{{ value }}</div>
+            <div class="kpi-label">{{ label }}</div>
         </div>
     </div>
     {% endfor %}
@@ -53,8 +71,8 @@
 <!-- Charts -->
 <div class="row g-3 mb-4">
     <div class="col-lg-4">
-        <div class="card shadow-sm h-100">
-            <div class="card-header fw-semibold">Cases by status</div>
+        <div class="card h-100">
+            <div class="card-header">Cases by status</div>
             <div class="card-body">
                 <div style="position: relative; height: 300px;">
                     <canvas id="statusChart"></canvas>
@@ -63,8 +81,8 @@
         </div>
     </div>
     <div class="col-lg-8">
-        <div class="card shadow-sm h-100">
-            <div class="card-header fw-semibold">Cases per Bureau / Cell</div>
+        <div class="card h-100">
+            <div class="card-header">Cases per Bureau / Cell</div>
             <div class="card-body">
                 <div style="position: relative; height: 300px;">
                     <canvas id="bureauChart"></canvas>
@@ -74,10 +92,10 @@
     </div>
 </div>
 
-<div class="card shadow-sm mb-4">
-    <div class="card-header fw-semibold">
+<div class="card mb-4">
+    <div class="card-header">
         Received vs disposed, last 12 months
-        <span class="text-muted fw-normal">(disposal month is the month of the case's last action)</span>
+        <span class="text-muted fw-normal small">(disposal month is the month of the case's last action)</span>
     </div>
     <div class="card-body">
         <div style="position: relative; height: 320px;">
@@ -89,8 +107,8 @@
 <!-- Tables -->
 <div class="row g-3 mb-5">
     <div class="col-lg-6">
-        <div class="card shadow-sm h-100">
-            <div class="card-header fw-semibold">Latest 5 overlap alerts</div>
+        <div class="card h-100">
+            <div class="card-header">Latest 5 overlap alerts</div>
             <div class="table-responsive">
                 <table class="table table-striped align-middle mb-0">
                     <thead>
@@ -128,8 +146,8 @@
     </div>
 
     <div class="col-lg-6">
-        <div class="card shadow-sm h-100">
-            <div class="card-header fw-semibold">5 open cases nearest to their deadline</div>
+        <div class="card h-100">
+            <div class="card-header">5 open cases nearest to their deadline</div>
             <div class="table-responsive">
                 <table class="table table-striped align-middle mb-0">
                     <thead>
@@ -174,15 +192,18 @@
     const bureauData = {{ bureau_chart|tojson }};
     const monthData = {{ month_chart|tojson }};
 
-    const palette = ['#0d6efd', '#198754', '#ffc107', '#dc3545', '#6f42c1',
-                     '#20c997', '#fd7e14', '#0dcaf0', '#6c757d', '#d63384'];
+    // Colours for every chart. (Charts are drawn by JavaScript, so they
+    // can't read theme.css. The colours are set here instead.)
+    const palette = ['#8bd450', '#38bdf8', '#fbbf24', '#a78bfa', '#f87171', '#8d99c4'];
+    Chart.defaults.color = '#8d99c4';        // axis labels, legend text
+    Chart.defaults.borderColor = '#263154';  // grid lines
 
     // 1. Doughnut: cases by status
     new Chart(document.getElementById('statusChart'), {
         type: 'doughnut',
         data: {
             labels: statusData.labels,
-            datasets: [{ data: statusData.values, backgroundColor: palette }]
+            datasets: [{ data: statusData.values, backgroundColor: palette, borderWidth: 0 }]
         },
         options: { maintainAspectRatio: false, plugins: { legend: { position: 'bottom' } } }
     });
@@ -192,7 +213,7 @@
         type: 'bar',
         data: {
             labels: bureauData.labels,
-            datasets: [{ label: 'Cases', data: bureauData.values, backgroundColor: '#0d6efd' }]
+            datasets: [{ label: 'Cases', data: bureauData.values, backgroundColor: palette[1], borderRadius: 6 }]
         },
         options: {
             maintainAspectRatio: false,
@@ -207,8 +228,8 @@
         data: {
             labels: monthData.labels,
             datasets: [
-                { label: 'Received', data: monthData.received, borderColor: '#0d6efd', backgroundColor: '#0d6efd', tension: 0.25 },
-                { label: 'Disposed', data: monthData.disposed, borderColor: '#198754', backgroundColor: '#198754', tension: 0.25 }
+                { label: 'Received', data: monthData.received, borderColor: palette[1], backgroundColor: palette[1], tension: 0.25 },
+                { label: 'Disposed', data: monthData.disposed, borderColor: palette[0], backgroundColor: palette[0], tension: 0.25 }
             ]
         },
         options: {

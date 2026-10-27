@@ -550,6 +550,77 @@ def escalate_case(case_id):
 
 
 # ---------------------------------------------------------------------------
+# REVIEWING SUGGESTED OVERLAP LINKS (Confirm / Dismiss buttons)
+# ---------------------------------------------------------------------------
+
+def get_link_for_review(case, link_id):
+    # Finds the link, and makes sure it really belongs to this case.
+    # If someone types a link number that is not about this case, they get
+    # a "Not Found" page instead of changing another case's link.
+    link = db.session.get(CaseLink, link_id)
+    if link is None or case.id not in (link.case_a_id, link.case_b_id):
+        abort(404)
+    return link
+
+
+@app.route("/cases/<case_id>/links/<int:link_id>/confirm", methods=["POST"])
+def confirm_link(case_id, link_id):
+    case = db.get_or_404(Case, case_id)
+    link = get_link_for_review(case, link_id)
+
+    # Only "suggested" links can be reviewed, so a double click or an old
+    # page cannot change a link that was already reviewed.
+    if link.review_state != "suggested":
+        flash("This overlap has already been reviewed.", "info")
+        return redirect(url_for("case_detail", case_id=case.id))
+
+    link.review_state = "confirmed"
+    db.session.commit()
+    flash("Overlap confirmed.", "success")
+    return redirect(url_for("case_detail", case_id=case.id))
+
+
+@app.route("/cases/<case_id>/links/<int:link_id>/dismiss", methods=["POST"])
+def dismiss_link(case_id, link_id):
+    case = db.get_or_404(Case, case_id)
+    link = get_link_for_review(case, link_id)
+
+    if link.review_state != "suggested":
+        flash("This overlap has already been reviewed.", "info")
+        return redirect(url_for("case_detail", case_id=case.id))
+
+    other_id = link.case_b_id if link.case_a_id == case.id else link.case_a_id
+
+    # 1. Mark the link as dismissed.
+    link.review_state = "dismissed"
+
+    # 2. Record it in the history: who (the logged-in person) and when (now).
+    add_action(
+        case,
+        "Overlap dismissed",
+        f"Overlap with {other_id} dismissed",
+        remarks=f"Overlap link with case {other_id} was dismissed as not a real overlap.",
+    )
+
+    # 3. Switch the "Overlap" flag off for any case in this link that has no
+    #    other active link left. (The flag is only ever switched OFF here.)
+    for linked_id in (link.case_a_id, link.case_b_id):
+        linked_case = db.session.get(Case, linked_id)
+        if linked_case is None:
+            continue
+        still_linked = CaseLink.query.filter(
+            or_(CaseLink.case_a_id == linked_id, CaseLink.case_b_id == linked_id),
+            CaseLink.review_state != "dismissed",
+        ).first()
+        if still_linked is None:
+            linked_case.overlap_flag = False
+
+    db.session.commit()
+    flash(f"Overlap with {other_id} dismissed.", "success")
+    return redirect(url_for("case_detail", case_id=case.id))
+
+
+# ---------------------------------------------------------------------------
 # NEW CASE PAGE
 # ---------------------------------------------------------------------------
 

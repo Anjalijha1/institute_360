@@ -26,6 +26,7 @@
                     <th>Officer</th>
                     <th>Status</th>
                     <th>Why linked</th>
+                    <th>Review</th>
                 </tr>
             </thead>
             <tbody>
@@ -34,7 +35,7 @@
                     <td><a href="/cases/{{ item.case.id }}">{{ item.case.id }}</a></td>
                     <td>{{ item.case.current_bureau.name if item.case.current_bureau else '-' }}</td>
                     <td>{{ item.case.officer.name if item.case.officer else 'Unassigned' }}</td>
-                    <td>{{ item.case.status or '-' }}</td>
+                    <td>{% if item.case.status %}<span class="badge-status status-{{ item.case.status|lower|replace(' ', '-') }}">{{ item.case.status }}</span>{% else %}-{% endif %}</td>
                     <td>
                         {{ item.link.reason or '-' }}
                         {% if item.link.match_score is not none %}
@@ -43,6 +44,19 @@
                         {% if item.link.review_state == 'confirmed' %}
                             <span class="badge bg-dark">Confirmed</span>
                         {% endif %}
+                    </td>
+                    <td class="text-nowrap">
+                        {% if item.link.review_state == 'suggested' %}
+                        <form method="POST" class="d-inline"
+                              action="{{ url_for('confirm_link', case_id=case.id, link_id=item.link.id) }}">
+                            <button type="submit" class="btn btn-success btn-sm">Confirm</button>
+                        </form>
+                        <form method="POST" class="d-inline"
+                              action="{{ url_for('dismiss_link', case_id=case.id, link_id=item.link.id) }}"
+                              onsubmit="return confirm('Dismiss this overlap? It will be hidden and recorded in the case history.');">
+                            <button type="submit" class="btn btn-outline-secondary btn-sm">Dismiss</button>
+                        </form>
+                        {% else %}-{% endif %}
                     </td>
                 </tr>
                 {% endfor %}
@@ -65,7 +79,7 @@
                     <tr><th>City / State</th><td>{{ case.institution.city or '-' }}, {{ case.institution.state or '-' }}</td></tr>
                     <tr><th>Region</th><td>{{ case.institution.region or '-' }}</td></tr>
                     <tr><th>Category</th><td>{{ case.category or '-' }}</td></tr>
-                    <tr><th>Status</th><td>{{ case.status or '-' }}</td></tr>
+                    <tr><th>Status</th><td>{% if case.status %}<span class="badge-status status-{{ case.status|lower|replace(' ', '-') }}">{{ case.status }}</span>{% else %}-{% endif %}</td></tr>
                     <tr><th>Bureau / Cell</th><td>{{ case.current_bureau.name if case.current_bureau else '-' }}</td></tr>
                 </table>
             </div>

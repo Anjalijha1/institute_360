@@ -1,45 +1,195 @@
 <!DOCTYPE html>
-<html lang="en">
-<head>
+<html lang="en" data-bs-theme="dark"><head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}AICTE Complaint Monitor{% endblock %}</title>
+
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+
+    <style>
+        :root {
+            --sidebar-bg: #111c2e;
+            --sidebar-text: #b9c3d6;
+            --sidebar-muted: #8fa0bd;
+            --sidebar-accent: #2f6df6;
+            --page-bg: #f4f6fa;
+        }
+
+        body { background: var(--page-bg); }
+
+        /* ---------- Logged-in layout: sidebar + main ---------- */
+        .app-shell { display: flex; min-height: 100vh; }
+
+        .sidebar {
+            width: 250px;
+            flex-shrink: 0;
+            background: var(--sidebar-bg);
+            color: var(--sidebar-text);
+            position: sticky;      /* stays in view while the page scrolls */
+            top: 0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            padding: 1.25rem 0.9rem;
+        }
+
+        .sidebar-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1.25rem;
+        }
+
+        .brand {
+            color: #fff;
+            font-size: 1.2rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            padding: 0.25rem 0.6rem;
+        }
+        .brand i { color: #5b8cff; font-size: 1.4rem; }
+
+        .sidebar-toggle {
+            background: transparent;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            color: #fff;
+            border-radius: 0.4rem;
+            padding: 0.2rem 0.55rem;
+            font-size: 1.4rem;
+            line-height: 1;
+        }
+
+        .sidebar-body { flex-direction: column; flex: 1; min-height: 0; }
+
+        .side-nav { display: flex; flex-direction: column; gap: 0.2rem; }
+
+        .side-link {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.6rem 0.8rem;
+            border-radius: 0.5rem;
+            color: var(--sidebar-text);
+            text-decoration: none;
+            font-size: 0.95rem;
+        }
+        .side-link i { font-size: 1.1rem; width: 1.25rem; text-align: center; }
+        .side-link:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
+        .side-link.active { background: var(--sidebar-accent); color: #fff; }
+
+        .side-footer {
+            margin-top: auto;      /* pushes this block to the bottom */
+            padding-top: 1rem;
+            border-top: 1px solid rgba(255, 255, 255, 0.12);
+        }
+
+        .side-user {
+            display: flex;
+            align-items: center;
+            gap: 0.7rem;
+            padding: 0.2rem 0.6rem 0.8rem;
+        }
+        .side-user > i { font-size: 2rem; color: var(--sidebar-muted); }
+        .side-user .name { color: #fff; font-weight: 600; line-height: 1.2; }
+        .side-user .role {
+            font-size: 0.8rem;
+            color: var(--sidebar-muted);
+            text-transform: capitalize;
+        }
+
+        .main { flex: 1; min-width: 0; padding: 1.75rem 2rem; }
+
+        /* ---------- Logged-out layout: content centered, no sidebar ---------- */
+        .auth-shell {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 1.5rem;
+        }
+        .auth-main { width: 100%; max-width: 960px; padding: 0 0.75rem; }
+
+        /* ---------- Small screens: sidebar becomes a top bar with a menu button ---------- */
+        @media (max-width: 991.98px) {
+            .app-shell { flex-direction: column; }
+            .sidebar {
+                width: 100%;
+                height: auto;
+                position: static;
+                padding: 0.8rem 1rem;
+            }
+            .sidebar-top { margin-bottom: 0; }
+            .sidebar-body { margin-top: 1rem; }
+            .main { padding: 1.25rem 1rem; }
+        }
+    </style>
+<link href="{{ url_for('static', filename='theme.css') }}" rel="stylesheet">
 </head>
 <body>
 
-<nav class="navbar navbar-expand-lg navbar-dark bg-dark">
-    <div class="container-fluid">
-        <a class="navbar-brand" href="/dashboard">AICTE Monitor</a>
+{% if current_user.is_authenticated %}
+<div class="app-shell">
 
-        {% if current_user.is_authenticated %}
-        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#mainNav">
-            <span class="navbar-toggler-icon"></span>
-        </button>
-
-        <div class="collapse navbar-collapse" id="mainNav">
-            <ul class="navbar-nav me-auto">
-                <li class="nav-item"><a class="nav-link" href="/dashboard">Dashboard</a></li>
-                <li class="nav-item"><a class="nav-link" href="/cases">Cases</a></li>
-                <li class="nav-item"><a class="nav-link" href="/alerts">Alerts</a></li>
-                <li class="nav-item"><a class="nav-link" href="/reports">Reports</a></li>
-            </ul>
-
-            <span class="navbar-text me-3">Signed in as {{ current_user.name }}</span>
-            <a class="btn btn-outline-light btn-sm" href="/logout">Logout</a>
+    <aside class="sidebar">
+        <div class="sidebar-top">
+            <div class="brand"><i class="bi bi-shield-check"></i> Complaint Hub</div>
+            <button class="sidebar-toggle d-lg-none" type="button"
+                    data-bs-toggle="collapse" data-bs-target="#sidebarMenu"
+                    aria-controls="sidebarMenu" aria-label="Show or hide the menu">
+                <i class="bi bi-list"></i>
+            </button>
         </div>
-        {% endif %}
-    </div>
-</nav>
 
-<div class="container mt-4">
-    {% with messages = get_flashed_messages(with_categories=true) %}
-        {% for category, message in messages %}
-            <div class="alert alert-{{ category }}">{{ message }}</div>
-        {% endfor %}
-    {% endwith %}
+        <div class="collapse d-lg-flex sidebar-body" id="sidebarMenu">
+            <nav class="side-nav">
+                <a class="side-link {% if request.endpoint == 'dashboard' %}active{% endif %}"
+                   href="{{ url_for('dashboard') }}"><i class="bi bi-speedometer2"></i> Dashboard</a>
 
-    {% block content %}{% endblock %}
+                <a class="side-link {% if request.endpoint in ('cases', 'case_detail') %}active{% endif %}"
+                   href="{{ url_for('cases') }}"><i class="bi bi-folder2-open"></i> Cases</a>
+
+                <a class="side-link {% if request.endpoint == 'new_case' %}active{% endif %}"
+                   href="{{ url_for('new_case') }}"><i class="bi bi-plus-circle"></i> New Case</a>
+
+                <a class="side-link {% if request.endpoint == 'alerts' %}active{% endif %}"
+                   href="{{ url_for('alerts') }}"><i class="bi bi-bell"></i> Alerts</a>
+
+                <a class="side-link {% if request.endpoint == 'reports' %}active{% endif %}"
+                   href="{{ url_for('reports') }}"><i class="bi bi-bar-chart-line"></i> Reports</a>
+            </nav>
+
+            <div class="side-footer">
+                <div class="side-user">
+                    <i class="bi bi-person-circle"></i>
+                    <div>
+                        <div class="name">{{ current_user.name }}</div>
+                        <div class="role">{{ current_user.role or '' }}</div>
+                    </div>
+                </div>
+
+                <a class="side-link" href="{{ url_for('logout') }}"><i class="bi bi-box-arrow-right"></i> Logout</a>
+            </div>
+        </div>
+    </aside>
+
+    <main class="main">
+{% else %}
+<div class="auth-shell">
+    <main class="auth-main">
+{% endif %}
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% for category, message in messages %}
+                <div class="alert alert-{{ category }}">{{ message }}</div>
+            {% endfor %}
+        {% endwith %}
+
+        {% block content %}{% endblock %}
+
+    </main>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
